@@ -1,0 +1,14 @@
+sample:
+  name: I2C Target + LED Blink (SAME54)
+tests:
+  sample.i2c_test_app:
+    tags:
+      - i2c
+      - gpio
+    depends_on:
+      - i2c
+      - gpio
+    platform_allow:
+      - sam_e54_xpro
+    integration_platforms:
+      - sam_e54_xpro
