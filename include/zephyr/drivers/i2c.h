@@ -463,12 +463,6 @@ struct i2c_target_config {
 	 */
 	uint16_t address_mask;
 
-	/**
-	 * Optional secondary target address. When non-zero and supported by the
-	 * controller, the target will respond to both @ref address and this field.
-	 * Secondary matching is mutually exclusive with address masking.
-	 */
-	uint16_t secondary_address;
 };
 
 /**

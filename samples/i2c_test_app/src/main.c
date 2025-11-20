@@ -8,7 +8,11 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/atomic.h>
 #include <stdlib.h>
+#include <string.h>
 #include <zephyr/sys/util.h>
+
+BUILD_ASSERT(IS_ENABLED(CONFIG_I2C_TARGET_DUAL_ADDRESS),
+	     "i2c_test_app requires CONFIG_I2C_TARGET_DUAL_ADDRESS=y");
 
 LOG_MODULE_REGISTER(i2c_test_app, LOG_LEVEL_INF);
 
@@ -30,13 +34,46 @@ static const struct device *const i2c_dev = DEVICE_DT_GET(I2C_BUS_NODE);
 
 static bool g_is_target_mode = false;
 
-/* Simple I2C target behavior: echo last written byte, increment on reads */
+/* Simple I2C target behavior:
+ *  - Always ACKs both programmed addresses (primary 0x33, secondary 0x66)
+ *  - When the host reads from 0x33 it returns 0x11/0x22/0x33/0x44
+ *  - When the host reads from 0x66 it returns 0xA1/0xB2/0xC3/0xD4
+ *  - Writes still update i2c_last_written/i2c_next_read so shell demos work
+ */
 static uint8_t i2c_last_written;
 static uint8_t i2c_next_read;
 static uint8_t tx_buf[16];
 static uint32_t tx_len = 0;
 static uint8_t read_byte_index = 0; /* Track which byte to send in sequence */
-static const uint8_t reply_bytes[4] = {0x11, 0x22, 0x33, 0x44}; /* Fixed reply sequence */
+
+struct reply_profile {
+	const uint8_t *bytes;
+	size_t len;
+	const char *label;
+};
+
+static const uint8_t primary_reply_bytes[] = { 0x11, 0x22, 0x33, 0x44 };
+static const uint8_t secondary_reply_bytes[] = { 0xA1, 0xB2, 0xC3, 0xD4 };
+
+static const struct reply_profile reply_primary = {
+	.bytes = primary_reply_bytes,
+	.len = ARRAY_SIZE(primary_reply_bytes),
+	.label = "primary",
+};
+
+static const struct reply_profile reply_secondary = {
+	.bytes = secondary_reply_bytes,
+	.len = ARRAY_SIZE(secondary_reply_bytes),
+	.label = "secondary",
+};
+
+static const struct reply_profile *active_reply = &reply_primary;
+static uint16_t active_reply_addr;
+
+static const struct reply_profile *select_reply_profile(struct i2c_target_config *config,
+							uint16_t *addr_out);
+static void reset_reply_sequence(struct i2c_target_config *config);
+
 
 #if defined(CONFIG_I2C_TARGET_BUFFER_MODE)
 
@@ -102,11 +139,17 @@ static int cb_write_received(struct i2c_target_config *config, uint8_t val)
 
 static int cb_read_requested(struct i2c_target_config *config, uint8_t *val)
 {
-	ARG_UNUSED(config);
-	/* Reset index and send first byte of fixed sequence */
-	read_byte_index = 0;
-	*val = reply_bytes[read_byte_index];
-	LOG_INF("I2C read first: 0x%02x (byte %d/4)", *val, read_byte_index + 1);
+	reset_reply_sequence(config);
+
+	if ((active_reply == NULL) || (active_reply->len == 0U)) {
+		*val = 0x00;
+		LOG_WRN("I2C read first: no reply profile, sending 0x00");
+		return 0;
+	}
+
+	*val = active_reply->bytes[read_byte_index];
+	LOG_INF("I2C read first (%s @0x%02x): 0x%02x (byte %u/%zu)", active_reply->label,
+		active_reply_addr & 0x7FU, *val, read_byte_index + 1U, active_reply->len);
 	read_byte_index++;
 	return 0;
 }
@@ -114,15 +157,24 @@ static int cb_read_requested(struct i2c_target_config *config, uint8_t *val)
 static int cb_read_processed(struct i2c_target_config *config, uint8_t *val)
 {
 	ARG_UNUSED(config);
-	/* Send next byte in fixed sequence, wrap around after 4 bytes */
-	if (read_byte_index < 4) {
-		*val = reply_bytes[read_byte_index];
-		LOG_INF("I2C read next: 0x%02x (byte %d/4)", *val, read_byte_index + 1);
+	const struct reply_profile *profile = (active_reply != NULL) ? active_reply : &reply_primary;
+	size_t last_index = (profile->len > 0U) ? (profile->len - 1U) : 0U;
+
+	if (profile->len == 0U) {
+		*val = 0x00;
+		LOG_WRN("I2C read next: empty profile, sending 0x00");
+		return 0;
+	}
+
+	if (read_byte_index < profile->len) {
+		*val = profile->bytes[read_byte_index];
+		LOG_INF("I2C read next (%s @0x%02x): 0x%02x (byte %u/%zu)", profile->label,
+			active_reply_addr & 0x7FU, *val, read_byte_index + 1U, profile->len);
 		read_byte_index++;
 	} else {
-		/* After 4 bytes, keep sending the last byte */
-		*val = reply_bytes[3];
-		LOG_INF("I2C read next: 0x%02x (repeat last)", *val);
+		*val = profile->bytes[last_index];
+		LOG_INF("I2C read next (%s @0x%02x): 0x%02x (repeat last)", profile->label,
+			active_reply_addr & 0x7FU, *val);
 	}
 	return 0;
 }
@@ -155,19 +207,19 @@ static void cb_buf_write_received(struct i2c_target_config *config, uint8_t *ptr
 __attribute__((noinline))
 static int cb_buf_read_requested(struct i2c_target_config *config, uint8_t **ptr, uint32_t *len)
 {
-    ARG_UNUSED(config);
-    /* Prepare fixed 4-byte response */
-    tx_len = 4;
-    tx_buf[0] = 0x11;
-    tx_buf[1] = 0x22;
-    tx_buf[2] = 0x33;
-    tx_buf[3] = 0x44;
-    *ptr = tx_buf;
-    *len = tx_len;
+	reset_reply_sequence(config);
+
+	const struct reply_profile *profile = (active_reply != NULL) ? active_reply : &reply_primary;
+
+	tx_len = MIN(profile->len, ARRAY_SIZE(tx_buf));
+	memcpy(tx_buf, profile->bytes, tx_len);
+	*ptr = tx_buf;
+	*len = tx_len;
 	atomic_inc(&dma_stats.tx_blocks);
 	atomic_add(&dma_stats.tx_bytes, (atomic_val_t)tx_len);
 	atomic_set(&dma_stats.tx_last, (atomic_val_t)tx_len);
-    LOG_INF("I2C buf read: offering %u bytes (0x11 0x22 0x33 0x44)", tx_len);
+	LOG_INF("I2C buf read (%s @0x%02x): offering %u bytes", profile->label,
+		active_reply_addr & 0x7FU, tx_len);
     return 0;
 }
 #endif
@@ -184,14 +236,136 @@ static const struct i2c_target_callbacks i2c_cb = {
     .stop = cb_stop,
 };
 
-/* Target configuration: respond on addresses 0x28 (28) and 0x37 (55) */
-static struct i2c_target_config tgt_cfg = {
-    .address = 0x33,
+/* Target configurations: primary 0x33 (51) and optional secondary 0x66 (102) */
+static struct i2c_target_config tgt_cfg_primary = {
+	.address = 0x33,
+	.flags = 0,
+	.callbacks = &i2c_cb,
+	.address_mask = 0,
+};
+
+static struct i2c_target_config tgt_cfg_secondary = {
+	.address = 0x66,
     .flags = 0,
     .callbacks = &i2c_cb,
     .address_mask = 0,
-    .secondary_address = 0x66, 
 };
+
+static bool g_primary_registered;
+static bool g_secondary_registered;
+
+static int register_primary_target(uint16_t addr)
+{
+	tgt_cfg_primary.address = addr & 0x7FU;
+
+	int ret = i2c_target_register(i2c_dev, &tgt_cfg_primary);
+
+	if (ret == 0) {
+		g_primary_registered = true;
+		g_is_target_mode = true;
+	}
+
+	return ret;
+}
+
+static int register_secondary_target(uint16_t addr)
+{
+	tgt_cfg_secondary.address = addr & 0x7FU;
+
+	int ret = i2c_target_register(i2c_dev, &tgt_cfg_secondary);
+
+	if (ret == 0) {
+		g_secondary_registered = true;
+	}
+
+	return ret;
+}
+
+static int unregister_secondary_target(void)
+{
+	if (!g_secondary_registered) {
+		return 0;
+	}
+
+	int ret = i2c_target_unregister(i2c_dev, &tgt_cfg_secondary);
+
+	if (ret == 0) {
+		g_secondary_registered = false;
+	}
+
+	return ret;
+}
+
+static int unregister_primary_target(void)
+{
+	if (!g_primary_registered) {
+		return 0;
+	}
+
+	int ret = i2c_target_unregister(i2c_dev, &tgt_cfg_primary);
+
+	if (ret == 0) {
+		g_primary_registered = false;
+		g_is_target_mode = false;
+	}
+
+	return ret;
+}
+
+static int configure_target_mode(uint16_t primary, uint16_t secondary)
+{
+	int ret;
+
+	ret = unregister_secondary_target();
+	if (ret) {
+		return ret;
+	}
+
+	ret = unregister_primary_target();
+	if (ret) {
+		return ret;
+	}
+
+	ret = register_primary_target(primary);
+	if (ret) {
+		return ret;
+	}
+
+	if (secondary != 0U) {
+		ret = register_secondary_target(secondary);
+		if (ret) {
+			(void)unregister_primary_target();
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static const struct reply_profile *select_reply_profile(struct i2c_target_config *config,
+							uint16_t *addr_out)
+{
+	uint16_t addr = config->address & 0x3FFU;
+
+	if (addr_out != NULL) {
+		*addr_out = addr;
+	}
+
+	if (config == &tgt_cfg_secondary ||
+	    addr == (tgt_cfg_secondary.address & 0x3FFU)) {
+		return &reply_secondary;
+	}
+
+	return &reply_primary;
+}
+
+static void reset_reply_sequence(struct i2c_target_config *config)
+{
+	active_reply = select_reply_profile(config, &active_reply_addr);
+	read_byte_index = 0;
+	LOG_INF("I2C target addr 0x%02x using %s reply", active_reply_addr & 0x7FU,
+		active_reply->label);
+}
 
 /* --- Shell helpers --- */
 static int parse_u8(const char *s, uint8_t *out)
@@ -233,15 +407,16 @@ static int cmd_i2c_mode(const struct shell *shell, size_t argc, char **argv)
     }
 
     if (strcmp(argv[1], "target") == 0) {
-        uint16_t addr = tgt_cfg.address;
-        uint16_t secondary = tgt_cfg.secondary_address;
+        bool was_target = g_is_target_mode;
+        uint16_t addr = g_primary_registered ? tgt_cfg_primary.address : 0x33;
+        uint16_t secondary = g_secondary_registered ? tgt_cfg_secondary.address : 0;
         if (argc >= 3) {
             uint16_t tmp;
-            if (parse_u16(argv[2], &tmp) != 0 || tmp == 0) {
+            if (parse_u16(argv[2], &tmp) != 0 || tmp == 0U) {
                 shell_print(shell, "Invalid addr");
                 return -EINVAL;
             }
-            addr = tmp & 0x7F; /* 7-bit by default */
+            addr = tmp & 0x7FU;
         }
         if (argc >= 4) {
             uint16_t tmp;
@@ -249,57 +424,46 @@ static int cmd_i2c_mode(const struct shell *shell, size_t argc, char **argv)
                 shell_print(shell, "Invalid secondary addr");
                 return -EINVAL;
             }
-            secondary = tmp == 0 ? 0 : (tmp & 0x7F);
-            if (secondary == addr && secondary != 0) {
+            secondary = tmp == 0U ? 0U : (tmp & 0x7FU);
+            if (secondary == addr && secondary != 0U) {
                 shell_print(shell, "Secondary must differ from primary");
                 return -EINVAL;
             }
         }
 
         if (!g_is_target_mode) {
-            /* Clear buffers before enabling target mode */
             memset(tx_buf, 0, sizeof(tx_buf));
             i2c_last_written = 0;
             i2c_next_read = 0;
-
-            /* Update address and register */
-            tgt_cfg.address = addr;
-            tgt_cfg.secondary_address = secondary;
-            int ret = i2c_target_register(i2c_dev, &tgt_cfg);
-            if (ret) {
-                shell_print(shell, "target_register failed: %d", ret);
-                return ret;
-            }
-            g_is_target_mode = true;
-            if (secondary) {
-                shell_print(shell, "Mode: TARGET @0x%02x/0x%02x", addr, secondary);
-            } else {
-                shell_print(shell, "Mode: TARGET @0x%02x", addr);
-            }
-        } else {
-            /* Re-register with new address: unregister then register */
-            (void)i2c_target_unregister(i2c_dev, &tgt_cfg);
-            tgt_cfg.address = addr;
-            tgt_cfg.secondary_address = secondary;
-            int ret = i2c_target_register(i2c_dev, &tgt_cfg);
-            if (ret) {
-                shell_print(shell, "target_register failed: %d", ret);
-                return ret;
-            }
-            if (secondary) {
-                shell_print(shell, "Mode: TARGET @0x%02x/0x%02x (updated)", addr, secondary);
-            } else {
-                shell_print(shell, "Mode: TARGET @0x%02x (updated)", addr);
-            }
         }
+
+        int ret = configure_target_mode(addr, secondary);
+            if (ret) {
+            shell_print(shell, "target configure failed: %d", ret);
+                return ret;
+            }
+
+        const char *suffix = was_target ? " (updated)" : "";
+
+            if (secondary) {
+            shell_print(shell, "Mode: TARGET @0x%02x/0x%02x%s", addr, secondary, suffix);
+        } else {
+            shell_print(shell, "Mode: TARGET @0x%02x%s", addr, suffix);
+            }
+
         return 0;
     }
 
     if (strcmp(argv[1], "ctrl") == 0 || strcmp(argv[1], "controller") == 0) {
         if (g_is_target_mode) {
-            int ret = i2c_target_unregister(i2c_dev, &tgt_cfg);
+            int ret = unregister_secondary_target();
             if (ret) {
-                shell_print(shell, "target_unregister failed: %d", ret);
+                shell_print(shell, "secondary unregister failed: %d", ret);
+                return ret;
+            }
+            ret = unregister_primary_target();
+            if (ret) {
+                shell_print(shell, "primary unregister failed: %d", ret);
                 return ret;
             }
             g_is_target_mode = false;
@@ -447,7 +611,7 @@ int main(void)
 {
 	int ret;
 
-	LOG_INF("i2c_test_app start test");
+	LOG_INF("i2c_test_app start");
 
 	/* Initialize LED */
 	if (!device_is_ready(led.port)) {
@@ -466,14 +630,13 @@ int main(void)
 		return -ENODEV;
 	}
 
-    /* Register as I2C target (slave) by default on addresses 0x28 and 0x37 */
-    ret = i2c_target_register(i2c_dev, &tgt_cfg);
+    /* Register as I2C target (slave) by default on addresses 0x33 and 0x66 */
+	ret = configure_target_mode(0x33, 0x66);
     if (ret) {
-        LOG_ERR("i2c_target_register failed: %d", ret);
+		LOG_ERR("configure_target_mode failed: %d", ret);
         return -EINVAL;
     }
-    g_is_target_mode = true;
-    LOG_INF("I2C target registered on addresses 0x28 (28) and 0x37 (55)");
+    LOG_INF("I2C target registered on addresses 0x33 (51) and 0x66 (102)");
 
 	/* Blink loop like blinky */
 	while (1) {

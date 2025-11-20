@@ -15,6 +15,11 @@ Enable the following Kconfig options in the application:
 - `CONFIG_I2C_TARGET_BUFFER_MODE=y`
 - `CONFIG_I2C_MCHP_DMA_DRIVEN=y`
 - Optional tuning: `CONFIG_I2C_MCHP_TARGET_MAX_BUF_SIZE` (default 256)
+- Flash storage helpers (boot-count + last-byte tracking) use the board's
+  `storage` partition on `flash0`, so enable:
+  - `CONFIG_FLASH=y`
+  - `CONFIG_FLASH_MAP=y`
+  - `CONFIG_FLASH_MAP_LABELS=y`
 
 UART/console and GPIO/LED are optional and unrelated to DMA.
 
@@ -65,14 +70,17 @@ New static functions when `CONFIG_I2C_MCHP_DMA_DRIVEN && CONFIG_I2C_TARGET_BUFFE
 ### Address-match flow
 - On AMATCH, check direction with `SERCOM_I2CS.STATUS.DIR`:
   - Read (host reading):
-    - Call `buf_read_requested(&ptr, &len)`; if provided, issue `RECEIVE_ACK_NAK` once and start TX DMA. Otherwise, fall back to byte mode.
+    - Call `buf_read_requested(&ptr, &len)`; if a buffer is provided, the driver arms TX DMA immediately for the entire buffer (no manual “first byte” write) and issues `RECEIVE_ACK_NAK` once so the host can begin clocking data. Extra clocks after the buffered payload are NACKed automatically. Otherwise, fall back to byte mode.
   - Write (host writing):
     - Call `write_requested()`; start RX DMA into internal buffer (`tgt_rx_buf`).
 - See: drivers/i2c/i2c_mchp_sercom_g1.c:1242
 
+### Matched-address tracking
+- The driver records which `i2c_target_config` instance matched the incoming address and passes that pointer to every callback, so applications can register multiple configs (one per address) without extra API fields.
+- Target callbacks can inspect the config pointer (as the sample does) to pick different reply profiles for each address.
+
 ### DRDY handling with DMA active
-- When TX DMA is active, DRDY path returns early (DMA feeds data).
-- When RX DMA is active, DRDY path keeps sending ACKs and returns; DMA pulls from the data register.
+- While TX or RX DMA is active, the driver masks the DRDY interrupt to avoid unnecessary ISR re-entry. DRDY is automatically re-enabled once DMA stops.
 - When DMA is not active, existing byte-wise logic remains.
 - See: drivers/i2c/i2c_mchp_sercom_g1.c:1384
 
@@ -94,6 +102,8 @@ New static functions when `CONFIG_I2C_MCHP_DMA_DRIVEN && CONFIG_I2C_TARGET_BUFFE
     - `buf_read_requested(config, &ptr, &len)`: provides a TX buffer burst for DMA
   - Configuration enables: `CONFIG_I2C_TARGET_BUFFER_MODE=y`, `CONFIG_I2C_MCHP_DMA_DRIVEN=y` (see `prj.conf:1`).
   - Shell command `i2c stats` (added to the sample) tallies RX/TX DMA blocks via the buffer-mode callbacks so you can monitor transfers without extra instrumentation.
+  - The sample registers one `i2c_target_config` per address and keys off the callback’s `config` pointer to differentiate responses: address `0x33` returns `0x11/0x22/0x33/0x44`, while `0x66` returns `0xA1/0xB2/0xC3/0xD4`.
+  - Persistent flash-backed state (boot counter + last target byte) is automatically loaded from the `storage_partition` on `flash0`. Use the `storage [info|save|erase]` shell command to inspect or force commits; writes are throttled and auto-flushed a few seconds after the last I2C write.
 
 ## Build and Run
 - Build: `west build -b sam_e54_xpro samples/i2c_test_app -p auto`
@@ -110,7 +120,7 @@ New static functions when `CONFIG_I2C_MCHP_DMA_DRIVEN && CONFIG_I2C_TARGET_BUFFE
 
 ## Tuning
 - `CONFIG_I2C_MCHP_TARGET_MAX_BUF_SIZE`: increase for larger write bursts from the host.
-- You can reduce ISR traffic during DMA by masking `DRDY` while DMA is active (not strictly required; current implementation tolerates DRDY during DMA).
+- The driver automatically masks `DRDY` while target DMA is active, so the ISR only fires again once DMA is halted (STOP, error, or completion).
 
 ## File Map
 - Driver
@@ -120,9 +130,8 @@ New static functions when `CONFIG_I2C_MCHP_DMA_DRIVEN && CONFIG_I2C_TARGET_BUFFE
 - Sample
   - samples/i2c_test_app/prj.conf:1
   - samples/i2c_test_app/src/main.c:1
-  - Shell helper `i2c mode target <addr> [secondary]` re-registers the target
-    address and optional second address so you can exercise AMODE=two-addresses
-    directly from the console.
+- Shell helper `i2c mode target <addr> [secondary]` re-registers the target
+    addresses so you can exercise AMODE=two-addresses directly from the console.
 
 ---
 If you want, we can extend TX to support multi-buffer reads by reissuing `buf_read_requested()` in the TX DMA completion path and restarting DMA until STOP.

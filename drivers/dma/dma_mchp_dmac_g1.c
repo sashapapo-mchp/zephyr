@@ -155,12 +155,6 @@ typedef struct dma_mchp_channel_config {
 	/* Channel state */
 	bool is_configured;
 
-	/* Last configured transfer direction */
-	enum dma_channel_direction direction;
-
-	/* Total bytes configured for the current transfer */
-	size_t configured_bytes;
-
 } dma_mchp_channel_config_t;
 
 /**
@@ -601,8 +595,7 @@ static dma_mchp_ch_state_t dmac_ch_get_state(dmac_registers_t *dmac_reg, uint32_
  * @retval 0 on success.
  * @retval -EINVAL if the beat size is invalid.
  */
-static int8_t dmac_ch_get_status(dmac_registers_t *dmac_reg, dma_mchp_dmac_t *data,
-				 dma_mchp_channel_config_t *chan_cfg, uint8_t channel,
+static int8_t dmac_ch_get_status(dmac_registers_t *dmac_reg, dma_mchp_dmac_t *data, uint8_t channel,
 				 struct dma_status *stat)
 {
 	int8_t ret_val = 0;
@@ -616,7 +609,7 @@ static int8_t dmac_ch_get_status(dmac_registers_t *dmac_reg, dma_mchp_dmac_t *da
 		stat->busy = false;
 		stat->pending_length = data->descriptors_wb[channel].DMAC_BTCNT;
 	}
- 
+
 	/* Adjust pending length based on beat size */
 	switch (((DMAC_BTCTRL_BEATSIZE_Msk & data->descriptors[channel].DMAC_BTCTRL) >>
 		 DMAC_BTCTRL_BEATSIZE_Pos)) {
@@ -632,19 +625,6 @@ static int8_t dmac_ch_get_status(dmac_registers_t *dmac_reg, dma_mchp_dmac_t *da
 	default:
 		ret_val = -EINVAL;
 		LOG_ERR("Invalid configuration beat size");
-	}
-
-	if (chan_cfg != NULL) {
-		stat->dir = chan_cfg->direction;
-		if (chan_cfg->configured_bytes >= stat->pending_length) {
-			stat->total_copied =
-				(uint64_t)(chan_cfg->configured_bytes - stat->pending_length);
-		} else {
-			stat->total_copied = 0U;
-		}
-	} else {
-		stat->dir = 0;
-		stat->total_copied = 0U;
 	}
 
 	return ret_val;
@@ -1095,7 +1075,6 @@ static int dma_mchp_config(const struct device *dev, uint32_t channel, struct dm
 	int ret = 0;
 	bool irq_locked = false;
 	void *desc = NULL, *base_desc = NULL;
-	size_t total_bytes = 0U;
 
 	ARG_UNUSED(dev_cfg);
 
@@ -1185,8 +1164,6 @@ static int dma_mchp_config(const struct device *dev, uint32_t channel, struct dm
 			break;
 		}
 
-		total_bytes += block->block_size;
-
 		/* Check multi block */
 		if (config->block_count > 1) {
 			/* Check whether we have enough descriptors in the pool */
@@ -1214,8 +1191,6 @@ static int dma_mchp_config(const struct device *dev, uint32_t channel, struct dm
 
 			/* Move to the next block */
 			block = block->next_block;
-
-			total_bytes += block->block_size;
 
 			/* Configure the block */
 			LOG_DBG("BLOCK %d: Configure descriptor at address: %p", i + 1, desc);
@@ -1249,8 +1224,6 @@ static int dma_mchp_config(const struct device *dev, uint32_t channel, struct dm
 		/* Register the callback function for the channel*/
 		channel_config->cb = config->dma_callback;
 		channel_config->user_data = config->user_data;
-		channel_config->direction = config->channel_direction;
-		channel_config->configured_bytes = total_bytes;
 
 		/* Update channel state to configured */
 		channel_config->is_configured = true;
@@ -1445,7 +1418,6 @@ static int dma_mchp_reload(const struct device *dev, uint32_t channel, uint32_t 
 		}
 
 		LOG_DBG("Reloaded channel %d for %08X to %08X (%u)", channel, src, dst, size);
-		channel_config->configured_bytes = size;
 		ret = 0;
 	} while (0);
 
@@ -1592,8 +1564,7 @@ static int dma_mchp_get_status(const struct device *dev, uint32_t channel, struc
 		}
 
 		/* Retrieve DMA channel status */
-		ret = dmac_ch_get_status(DMAC_REGS, dev_data->dmac_desc_data,
-					 &dev_data->dma_channel_config[channel], channel, stat);
+		ret = dmac_ch_get_status(DMAC_REGS, dev_data->dmac_desc_data, channel, stat);
 		if (ret < 0) {
 			break;
 		}
