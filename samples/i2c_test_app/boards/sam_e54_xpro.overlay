@@ -1,0 +1,20 @@
+/*
+ * Remap the sample to SERCOM3 so we can use the I2C pins on the Arduino/EXT
+ * headers (PA22 = SDA, PA23 = SCL). SERCOM7 is left available for other uses.
+ */
+&sercom7 {
+	status = "disabled";
+};
+
+&sercom3 {
+	status = "okay";
+	compatible = "microchip,sercom-g1-i2c";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&sercom3_i2c_default>;
+	pinctrl-names = "default";
+	dmas = <&dmac 10 0x0a>, <&dmac 11 0x0b>;
+	dma-names = "rx", "tx";
+};
+
