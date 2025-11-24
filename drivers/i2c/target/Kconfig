@@ -25,6 +25,16 @@ config I2C_TARGET_BUFFER_MODE
 	help
 	  This is an option to enable buffer mode.
 
+config I2C_TARGET_DUAL_ADDRESS
+	bool "Enable dual-address support for I2C targets"
+	default y
+	help
+	  Allow I2C target drivers to expose both a primary and secondary address.
+	  When enabled, target drivers may update i2c_target_config.secondary_address
+	  and i2c_target_config.target_address to reflect the addresses currently in
+	  use.  Disable this to reduce structure size when dual-address targets are
+	  never used.
+
 # zephyr-keep-sorted-start
 source "drivers/i2c/target/Kconfig.eeprom"
 # zephyr-keep-sorted-stop

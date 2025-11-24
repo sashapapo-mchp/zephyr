@@ -28,13 +28,22 @@ config I2C_MCHP_INTERRUPT_DRIVEN
 config I2C_MCHP_DMA_DRIVEN
 	bool "DMA support for Microchip I2C devices"
 	default n
-	depends on I2C_CALLBACK
+	depends on I2C_CALLBACK || (I2C_TARGET && I2C_TARGET_BUFFER_MODE)
 	select DMA
 	help
 	  This enables DMA driven transactions for the I2C peripheral.
 	  DMA driven mode requires fewer interrupts to handle the
 	  transaction and ensures that high speed modes are not delayed
 	  by data reloading.
+
+config I2C_MCHP_TARGET_MAX_BUF_SIZE
+	int "Target DMA buffer size"
+	default 256
+	depends on I2C_TARGET && I2C_TARGET_BUFFER_MODE && I2C_MCHP_DMA_DRIVEN
+	help
+	  Size (in bytes) of the internal DMA buffer used for I2C target RX.
+	  For host writes to the target, the driver accumulates data into this
+	  buffer and reports chunks via buf_write_received().
 
 config I2C_MCHP_TARGET
 	bool "Target device support for Microchip I2C devices"
