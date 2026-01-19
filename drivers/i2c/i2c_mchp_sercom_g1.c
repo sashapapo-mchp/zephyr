@@ -95,6 +95,8 @@ struct i2c_mchp_dev_data {
 #ifdef CONFIG_I2C_CALLBACK
 	i2c_callback_t i2c_async_callback;
 	void *user_data;
+	/* Flag to prevent double callback invocation during error handling */
+	bool error_callback_pending;
 #endif /*CONFIG_I2C_CALLBACK*/
 #ifdef CONFIG_I2C_TARGET
 	/* Registered target configs (hardware supports up to two addresses). */
@@ -112,6 +114,8 @@ struct i2c_mchp_dev_data {
 #endif /*CONFIG_I2C_TARGET*/
 #ifdef CONFIG_I2C_MCHP_DMA_DRIVEN
 	const struct i2c_mchp_dev_config *cfg;
+	/* Flag indicating controller DMA transfer is active */
+	bool ctrl_dma_active;
 #endif /*CONFIG_I2C_MCHP_DMA_DRIVEN*/
 
 #ifdef CONFIG_I2C_TARGET_BUFFER_MODE
@@ -330,6 +334,25 @@ static void i2c_controller_status_clear(const struct device *dev, uint16_t statu
 	i2c_regs->I2CM.SERCOM_STATUS = reg_val;
 }
 
+static int i2c_status_to_errno(uint16_t status)
+{
+	if (status == 0U) {
+		return 0;
+	}
+
+	if ((status & SERCOM_I2CM_STATUS_ARBLOST_Msk) == SERCOM_I2CM_STATUS_ARBLOST_Msk) {
+		return -EAGAIN;
+	}
+
+	if ((status & (SERCOM_I2CM_STATUS_MEXTTOUT_Msk | SERCOM_I2CM_STATUS_SEXTTOUT_Msk |
+		       SERCOM_I2CM_STATUS_LOWTOUT_Msk)) != 0U) {
+		return -ETIMEDOUT;
+	}
+
+	/* All other error sources, including RXNACK, map to -EIO */
+	return -EIO;
+}
+
 static void i2c_controller_int_enable(const struct device *dev, uint8_t int_enable_mask)
 {
 	uint8_t int_enable_flags = 0;
@@ -420,6 +443,50 @@ static void i2c_controller_addr_write(const struct device *dev, uint32_t addr)
 		LOG_ERR("Timeout waiting for I2C SYNCBUSY SYSOP clear");
 	}
 }
+
+#ifdef CONFIG_I2C_MCHP_DMA_DRIVEN
+/**
+ * @brief Write address with length for DMA transfers.
+ *
+ * Per Microchip datasheet: When using I2C Host with DMA, the ADDR register must
+ * be written with ADDR.ADDR (address), ADDR.LEN (transaction length), and
+ * ADDR.LENEN (length enable). The hardware will:
+ * - Transfer ADDR.LEN bytes via DMA
+ * - Auto-generate NACK (for reads) and STOP after LEN bytes
+ * - If NACK received before LEN bytes (write), auto-generate STOP and raise LENERR
+ *
+ * @param dev Pointer to the I2C device structure.
+ * @param addr The 8-bit I2C address (including the R/W bit).
+ * @param len The number of data bytes in the transaction (0-255).
+ */
+static void i2c_controller_addr_write_with_len(const struct device *dev, uint32_t addr, uint8_t len)
+{
+	sercom_registers_t *i2c_regs = ((const struct i2c_mchp_dev_config *)(dev)->config)->regs;
+
+	if ((addr & (uint32_t)I2C_MCHP_MESSAGE_DIR_READ_MASK) == I2C_MCHP_MESSAGE_DIR_READ_MASK) {
+		i2c_set_controller_auto_ack(dev);
+	}
+
+	/*
+	 * Write address with length enable for DMA:
+	 * - ADDR.ADDR = target address with R/W bit
+	 * - ADDR.LEN = number of data bytes
+	 * - ADDR.LENEN = 1 to enable automatic length handling
+	 *
+	 * Hardware will auto-STOP after LEN bytes or on NACK (raising LENERR).
+	 */
+	i2c_regs->I2CM.SERCOM_ADDR =
+		SERCOM_I2CM_ADDR_ADDR(addr) |
+		SERCOM_I2CM_ADDR_LEN(len) |
+		SERCOM_I2CM_ADDR_LENEN(1);
+
+	/* Wait for synchronization */
+	while ((i2c_regs->I2CM.SERCOM_SYNCBUSY & SERCOM_I2CM_SYNCBUSY_SYSOP_Msk) ==
+	       SERCOM_I2CM_SYNCBUSY_SYSOP_Msk) {
+		/* Do nothing */
+	};
+}
+#endif /* CONFIG_I2C_MCHP_DMA_DRIVEN */
 
 static bool i2c_baudrate_calc(uint32_t bitrate, uint32_t sys_clock_rate, uint32_t *baud_val)
 {
@@ -1441,6 +1508,79 @@ unlock:
 #endif /*CONFIG_I2C_MCHP_TARGET*/
 
 #ifdef CONFIG_I2C_MCHP_DMA_DRIVEN
+/**
+ * @brief Clean up after I2C error and invoke callback.
+ *
+ * This function handles error cleanup for DMA-driven I2C transactions by:
+ * - Stopping any in-flight DMA transfers
+ * - Issuing a STOP condition on the bus
+ * - Clearing status and interrupt flags
+ * - Invoking the user callback with the error code
+ *
+ * @param dev Pointer to the I2C device structure.
+ * @param error_code The error code to pass to the callback.
+ */
+static void i2c_error_cleanup_and_callback(const struct device *dev, int error_code)
+{
+	struct i2c_mchp_dev_data *data = dev->data;
+	const struct i2c_mchp_dev_config *cfg = dev->config;
+	sercom_registers_t *i2c_regs = cfg->regs;
+
+#ifdef CONFIG_I2C_CALLBACK
+	/*
+	 * Check if error callback was already invoked for this transaction.
+	 * This prevents double callbacks when both ISR and DMA callback try
+	 * to handle the same error.
+	 */
+	if (data->error_callback_pending) {
+		return;
+	}
+	data->error_callback_pending = true;
+#endif
+
+	/* Stop any in-flight DMA */
+	if (cfg->i2c_dma.dma_dev != NULL) {
+		(void)dma_stop(cfg->i2c_dma.dma_dev, cfg->i2c_dma.tx_dma_channel);
+		(void)dma_stop(cfg->i2c_dma.dma_dev, cfg->i2c_dma.rx_dma_channel);
+	}
+	data->ctrl_dma_active = false;
+
+	/* Wait for MB or SB flag to be set - hardware must be ready */
+	uint32_t mb_wait = 10000;
+	while (mb_wait-- > 0) {
+		uint8_t intflags = i2c_regs->I2CM.SERCOM_INTFLAG;
+		if ((intflags & (SERCOM_I2CM_INTFLAG_MB_Msk | SERCOM_I2CM_INTFLAG_SB_Msk)) != 0) {
+			break;
+		}
+		k_busy_wait(1);
+	}
+
+	/* Issue STOP command */
+	i2c_regs->I2CM.SERCOM_CTRLB =
+		(i2c_regs->I2CM.SERCOM_CTRLB &
+		 ~(SERCOM_I2CM_CTRLB_ACKACT_Msk | SERCOM_I2CM_CTRLB_CMD_Msk)) |
+		(SERCOM_I2CM_CTRLB_ACKACT(1) | SERCOM_I2CM_CTRLB_CMD(0x3));
+
+	/* Wait for STOP command to be synchronized */
+	uint32_t sync_timeout = 10000;
+	while ((i2c_regs->I2CM.SERCOM_SYNCBUSY & SERCOM_I2CM_SYNCBUSY_SYSOP_Msk) != 0 &&
+	       sync_timeout-- > 0) {
+		k_busy_wait(1);
+	}
+
+	/* Clear status and interrupt flags */
+	i2c_controller_int_disable(dev, SERCOM_I2CM_INTENSET_Msk);
+	i2c_controller_int_flag_clear(dev, SERCOM_I2CM_INTFLAG_Msk);
+	i2c_controller_status_clear(dev, SERCOM_I2CM_STATUS_Msk);
+	i2c_set_controller_bus_state_idle(dev);
+
+#ifdef CONFIG_I2C_CALLBACK
+	if (data->i2c_async_callback != NULL) {
+		data->i2c_async_callback(dev, error_code, data->user_data);
+	}
+#endif
+}
+
 static void i2c_dma_write_done(const struct device *dma_dev, void *arg, uint32_t id, int error_code)
 {
 	struct i2c_mchp_dev_data *data = (struct i2c_mchp_dev_data *)arg;
