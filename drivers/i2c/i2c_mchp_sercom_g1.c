@@ -1871,6 +1871,43 @@ static int i2c_mchp_bitbang_get_sda(void *io_context)
 }
 #endif /* CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY */
 
+/**
+ * @brief Wait for the I2C bus to reach idle state after a transaction.
+ *
+ * After a DMA or interrupt-driven transfer completes, the hardware may still
+ * be finishing the STOP condition on the bus. This function polls the BUSSTATE
+ * field in the STATUS register until it indicates IDLE (0x1).
+ *
+ * The wait time is typically very short: ~2.5us at 400kHz, ~10us at 100kHz.
+ *
+ * @param dev Pointer to the device structure for the I2C driver.
+ */
+static void i2c_wait_bus_idle(const struct device *dev)
+{
+	const struct i2c_mchp_dev_config *cfg = dev->config;
+	sercom_registers_t *i2c_regs = cfg->regs;
+
+	/*
+	 * Poll BUSSTATE until IDLE (0x1). The DMA/interrupt completion fires
+	 * when data transfer to/from SERCOM finishes, but the auto-generated
+	 * STOP may still be in progress on the bus. Typically exits in 1-10
+	 * iterations depending on I2C bus speed and timing.
+	 */
+	uint32_t idle_timeout = 10000;
+
+	while (idle_timeout-- > 0) {
+		uint16_t status_reg = i2c_regs->I2CM.SERCOM_STATUS;
+		uint8_t bus_state = (status_reg & SERCOM_I2CM_STATUS_BUSSTATE_Msk) >>
+				    SERCOM_I2CM_STATUS_BUSSTATE_Pos;
+		if (bus_state == 0x1) {
+			return;
+		}
+		k_busy_wait(1);
+	}
+
+	LOG_WRN("Timeout waiting for I2C bus idle");
+}
+
 #ifdef CONFIG_I2C_MCHP_DMA_DRIVEN
 /**
  * @brief Clean up after I2C error and invoke callback.
