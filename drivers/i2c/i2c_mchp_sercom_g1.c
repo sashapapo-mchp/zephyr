@@ -11,9 +11,14 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/gpio.h>
 #include <mchp_dt_helper.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control/mchp_clock_control.h>
+
+#if defined(CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY)
+#include "i2c_bitbang.h"
+#endif
 
 LOG_MODULE_REGISTER(i2c_mchp_sercom_g1, CONFIG_I2C_LOG_LEVEL);
 
@@ -79,6 +84,10 @@ struct i2c_mchp_dma {
 
 struct i2c_mchp_dev_config {
 	sercom_registers_t *regs;
+#if defined(CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY)
+	struct gpio_dt_spec scl;
+	struct gpio_dt_spec sda;
+#endif
 	struct i2c_mchp_clock i2c_clock;
 	const struct pinctrl_dev_config *pcfg;
 	uint32_t bitrate;
@@ -1830,6 +1839,38 @@ static uint32_t i2c_target_dma_rx_flush(const struct device *dev, struct dma_sta
 }
 #endif /* CONFIG_I2C_MCHP_DMA_DRIVEN && CONFIG_I2C_TARGET && CONFIG_I2C_TARGET_BUFFER_MODE */
 
+#if defined(CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY)
+/**
+ * @brief Set SCL line state for bit-bang bus recovery.
+ */
+static void i2c_mchp_bitbang_set_scl(void *io_context, int state)
+{
+	const struct i2c_mchp_dev_config *config = io_context;
+
+	gpio_pin_set_dt(&config->scl, state);
+}
+
+/**
+ * @brief Set SDA line state for bit-bang bus recovery.
+ */
+static void i2c_mchp_bitbang_set_sda(void *io_context, int state)
+{
+	const struct i2c_mchp_dev_config *config = io_context;
+
+	gpio_pin_set_dt(&config->sda, state);
+}
+
+/**
+ * @brief Get SDA line state for bit-bang bus recovery.
+ */
+static int i2c_mchp_bitbang_get_sda(void *io_context)
+{
+	const struct i2c_mchp_dev_config *config = io_context;
+
+	return gpio_pin_get_dt(&config->sda) == 0 ? 0 : 1;
+}
+#endif /* CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY */
+
 #ifdef CONFIG_I2C_MCHP_DMA_DRIVEN
 /**
  * @brief Clean up after I2C error and invoke callback.
@@ -2403,9 +2444,77 @@ static int i2c_mchp_recover_bus(const struct device *dev)
 {
 	struct i2c_mchp_dev_data *data = dev->data;
 	const struct i2c_mchp_dev_config *const cfg = dev->config;
-	int retval;
+	int retval = I2C_MCHP_SUCCESS;
 
 	k_mutex_lock(&data->i2c_bus_mutex, K_FOREVER);
+
+#if defined(CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY)
+	struct i2c_bitbang bitbang_ctx;
+	struct i2c_bitbang_io bitbang_io = {
+		.set_scl = i2c_mchp_bitbang_set_scl,
+		.set_sda = i2c_mchp_bitbang_set_sda,
+		.get_sda = i2c_mchp_bitbang_get_sda,
+	};
+	uint32_t bitrate_cfg = I2C_MODE_CONTROLLER | i2c_map_dt_bitrate(cfg->bitrate);
+
+	/* Disable peripheral and interrupts so we can safely drive pins as GPIO */
+	i2c_controller_enable(dev, false);
+	i2c_controller_int_disable(dev, SERCOM_I2CM_INTENSET_Msk);
+
+	if (!gpio_is_ready_dt(&cfg->scl) || !gpio_is_ready_dt(&cfg->sda)) {
+		LOG_ERR("SCL/SDA GPIO not ready for recovery");
+		retval = -EIO;
+		goto out_unlock;
+	}
+
+	retval = gpio_pin_configure_dt(&cfg->scl, GPIO_OUTPUT_HIGH);
+	if (retval != 0) {
+		LOG_ERR("Failed to configure SCL for recovery: %d", retval);
+		goto out_unlock;
+	}
+
+	retval = gpio_pin_configure_dt(&cfg->sda, GPIO_OUTPUT_HIGH);
+	if (retval != 0) {
+		LOG_ERR("Failed to configure SDA for recovery: %d", retval);
+		goto out_unlock;
+	}
+
+	i2c_bitbang_init(&bitbang_ctx, &bitbang_io, (void *)cfg);
+	retval = i2c_bitbang_configure(&bitbang_ctx, bitrate_cfg);
+	if (retval != 0) {
+		LOG_ERR("Bitbang configure failed: %d", retval);
+		goto restore_pins;
+	}
+
+	retval = i2c_bitbang_recover_bus(&bitbang_ctx);
+
+	/* Sample SDA after recovery attempt */
+	(void)gpio_pin_configure_dt(&cfg->sda, GPIO_INPUT);
+	k_busy_wait(50);
+
+	int sda_state = gpio_pin_get_dt(&cfg->sda);
+
+	if (sda_state >= 0 && sda_state > 0) {
+		if (retval != 0) {
+			LOG_INF("Bitbang recovery reported %d but SDA is high; treating as success",
+				retval);
+		}
+		retval = 0;
+	} else if (retval != 0) {
+		LOG_ERR("Bitbang bus recovery failed: %d", retval);
+	}
+
+restore_pins:
+	/* Restore pinmux to peripheral function */
+	(void)pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+
+	/* Re-enable controller and drive bus idle */
+	i2c_controller_enable(dev, true);
+	i2c_set_controller_bus_state_idle(dev);
+
+out_unlock:
+#else
+	/* Basic recovery: just reset pins and peripheral */
 	i2c_controller_enable(dev, false);
 	i2c_controller_int_disable(dev, SERCOM_I2CM_INTENSET_Msk);
 
@@ -2418,6 +2527,8 @@ static int i2c_mchp_recover_bus(const struct device *dev)
 
 	i2c_controller_enable(dev, true);
 	i2c_set_controller_bus_state_idle(dev);
+#endif /* CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY */
+
 	k_mutex_unlock(&data->i2c_bus_mutex);
 
 	return retval;
@@ -2654,9 +2765,18 @@ static DEVICE_API(i2c, i2c_mchp_api) = {
 		irq_enable(DT_INST_IRQ_BY_IDX(n, m, irq));                                         \
 	} while (false)
 
+#if defined(CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY)
+#define I2C_MCHP_RECOVERY_PINS(n)                                                                  \
+	.scl = GPIO_DT_SPEC_INST_GET(n, scl_gpios),                                                \
+	.sda = GPIO_DT_SPEC_INST_GET(n, sda_gpios),
+#else
+#define I2C_MCHP_RECOVERY_PINS(n)
+#endif
+
 #define I2C_MCHP_CONFIG_DEFN(n)                                                                    \
 	static const struct i2c_mchp_dev_config i2c_mchp_dev_config_##n = {                        \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                         \
+		I2C_MCHP_RECOVERY_PINS(n)                                                          \
 		.bitrate = DT_INST_PROP(n, clock_frequency),                                       \
 		.irq_config_func = &i2c_mchp_irq_config_##n,                                       \
 		.run_in_standby = DT_INST_PROP(n, run_in_standby_en),                              \

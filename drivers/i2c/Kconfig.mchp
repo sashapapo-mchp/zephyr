@@ -35,6 +35,16 @@ config I2C_MCHP_DMA_DRIVEN
 	  transaction and ensures that high speed modes are not delayed
 	  by data reloading.
 
+config I2C_MCHP_SERCOM_G1_BUS_RECOVERY
+	bool "Enable GPIO-based bus recovery for SERCOM G1"
+	default n
+	depends on GPIO && I2C_MCHP_SERCOM_G1
+	select I2C_BITBANG
+	help
+	  Use GPIO bit-banging on SCL/SDA to recover a stuck bus by toggling
+	  SCL up to nine times, issuing a STOP if SDA is released. Requires
+	  scl-gpios and sda-gpios properties in the I2C controller node.
+
 config I2C_MCHP_TARGET
 	bool "Target device support for Microchip I2C devices"
 	default y

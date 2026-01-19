@@ -53,3 +53,17 @@ properties:
 
       For example
          dma-names = "tx", "rx";
+
+  scl-gpios:
+    type: phandle-array
+    description: |
+      Optional SCL GPIO used for bus recovery (bit-bang). Required when
+      enabling CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY. The GPIO must be
+      configured to the same pin as the SCL pinctrl function.
+
+  sda-gpios:
+    type: phandle-array
+    description: |
+      Optional SDA GPIO used for bus recovery (bit-bang). Required when
+      enabling CONFIG_I2C_MCHP_SERCOM_G1_BUS_RECOVERY. The GPIO must be
+      configured to the same pin as the SDA pinctrl function.
