@@ -1,0 +1,16 @@
+/*
+ * Device tree overlay for PIC32CX SG61 Curiosity Ultra
+ * Enables ICM (Integrity Check Monitor), PUKCC crypto peripherals, and TRNG
+ */
+
+&icm {
+	status = "okay";
+};
+
+&pukcc {
+	status = "okay";
+};
+
+&trng {
+	status = "okay";
+};

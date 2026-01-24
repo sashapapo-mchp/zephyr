@@ -1,0 +1,8 @@
+/*
+ * Device tree overlay for SAM E54 Xplained Pro
+ * Enables ICM (Integrity Check Monitor) crypto peripheral
+ */
+
+&icm {
+	status = "okay";
+};

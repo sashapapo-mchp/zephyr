@@ -1,0 +1,21 @@
+sample:
+  name: ICM SHA-256 Hash and PUKCC ECDSA
+  description: Demonstrates SHA-256 hash computation using ICM and ECDSA verification using PUKCC
+common:
+  tags:
+    - drivers
+    - crypto
+    - hash
+    - icm
+    - pukcc
+    - ecdsa
+  depends_on: icm
+tests:
+  sample.drivers.crypto.icm_hash:
+    platform_allow:
+      - pic32cx_sg61_cult
+      - pic32cx_sg41_cult
+      - sam_e54_xpro
+      - same54_xpro
+    integration_platforms:
+      - pic32cx_sg61_cult
