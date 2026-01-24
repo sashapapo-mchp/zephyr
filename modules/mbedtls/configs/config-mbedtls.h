@@ -234,6 +234,7 @@
 
 #if defined(CONFIG_MBEDTLS_ECP_C)
 #define MBEDTLS_ECP_C
+#define MBEDTLS_ECP_LIGHT
 #endif
 
 /* Supported elliptic curves */
@@ -426,19 +427,24 @@
 #endif
 
 #if defined(MBEDTLS_RSA_C) || \
-    defined(MBEDTLS_X509_USE_C)
+    defined(MBEDTLS_X509_USE_C) || \
+    defined(MBEDTLS_ECDSA_C) || \
+    defined(CONFIG_MBEDTLS_PK_WRITE_C)
 #define MBEDTLS_OID_C
 #endif
 
-#if defined(MBEDTLS_X509_USE_C)
+/* Enable PK parse/write when X509 or RSA/ECDSA is used */
+#if defined(MBEDTLS_X509_USE_C) || defined(MBEDTLS_RSA_C) || defined(MBEDTLS_ECDSA_C)
 #define MBEDTLS_PK_PARSE_C
 #endif
 
-#if defined(CONFIG_MBEDTLS_PK_WRITE_C)
+#if defined(CONFIG_MBEDTLS_PK_WRITE_C) || defined(MBEDTLS_RSA_C) || defined(MBEDTLS_ECDSA_C)
 #define MBEDTLS_PK_WRITE_C
 #endif
 
-#if defined(MBEDTLS_PK_PARSE_C) || defined(MBEDTLS_PK_WRITE_C)
+/* Enable PK module when RSA, ECDSA, or PK read/write is needed */
+#if defined(MBEDTLS_PK_PARSE_C) || defined(MBEDTLS_PK_WRITE_C) || \
+    defined(MBEDTLS_RSA_C) || defined(MBEDTLS_ECDSA_C)
 #define MBEDTLS_PK_C
 #endif
 
@@ -494,6 +500,23 @@
 #define MBEDTLS_PSA_P256M_DRIVER_ENABLED
 #endif
 
+
+#if defined(CONFIG_MBEDTLS_SHA256_ALT)
+#define MBEDTLS_SHA256_ALT
+#endif
+
+#if defined(CONFIG_MBEDTLS_ECDSA_SIGN_ALT)
+#define MBEDTLS_ECDSA_SIGN_ALT
+#endif
+
+#if defined(CONFIG_MBEDTLS_ECDSA_VERIFY_ALT)
+#define MBEDTLS_ECDSA_VERIFY_ALT
+#endif
+
+#if defined(CONFIG_MBEDTLS_RSA_ALT)
+#define MBEDTLS_RSA_ALT
+#endif
+
 #if defined(CONFIG_MBEDTLS_PSA_CRYPTO_STORAGE_C)
 #define MBEDTLS_PSA_CRYPTO_STORAGE_C
 #endif
@@ -509,6 +532,7 @@
 #if defined(CONFIG_MBEDTLS_USE_PSA_CRYPTO)
 #define MBEDTLS_USE_PSA_CRYPTO
 #endif
+
 
 #if defined(CONFIG_MBEDTLS_PSA_CRYPTO_CLIENT)
 #define MBEDTLS_PSA_CRYPTO_CLIENT

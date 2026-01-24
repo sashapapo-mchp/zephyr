@@ -1,0 +1,21 @@
+# Copyright (c) 2025 Microchip Technology Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config CRYPTO_MCHP_PUKCC
+	bool "Microchip PIC32CX/SAM E5x PUKCC crypto driver"
+	default y
+	depends on DT_HAS_MICROCHIP_PUKCC_G1_ENABLED
+	help
+	  Enable the PUKCC (Public Key Cryptographic Controller) hardware
+	  crypto driver for Microchip PIC32CX SG and SAM E54/D51 devices.
+
+	  This driver supports ECDSA P-256 signature verification and
+	  RSA operations using the PUKCC hardware accelerator.
+
+config CRYPTO_MCHP_PUKCC_MAX_SESSION
+	int "Maximum number of concurrent PUKCC sessions"
+	default 2
+	depends on CRYPTO_MCHP_PUKCC
+	help
+	  Maximum number of concurrent sessions supported by the
+	  PUKCC driver.

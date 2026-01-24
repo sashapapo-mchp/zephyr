@@ -655,6 +655,42 @@ config MBEDTLS_PSA_KEY_SLOT_COUNT
 
 endif # MBEDTLS_PSA_CRYPTO_C
 
+# Microchip MbedTLS ALT hardware acceleration (independent of PSA)
+config MBEDTLS_SHA256_ALT
+	bool "Use Microchip ICM for MbedTLS SHA-256"
+	depends on (SOC_FAMILY_MICROCHIP_PIC32CX_SG || SOC_FAMILY_SAM || SOC_FAMILY_SAM0) && MBEDTLS_BUILTIN
+	help
+	  Replace MbedTLS SHA-256 software implementation with ICM
+	  hardware acceleration. This makes mbedtls_sha256() and related
+	  functions use the ICM hardware accelerator directly.
+
+config MBEDTLS_ECDSA_SIGN_ALT
+	bool "Use Microchip PUKCC for MbedTLS ECDSA signing"
+	depends on (SOC_FAMILY_MICROCHIP_PIC32CX_SG || SOC_FAMILY_SAM || SOC_FAMILY_SAM0) && MBEDTLS_BUILTIN
+	select MBEDTLS_ECDSA_C
+	select MBEDTLS_ECP_C
+	help
+	  Replace MbedTLS ECDSA sign software implementation with PUKCC
+	  hardware acceleration. Supports P-256 (secp256r1) curve.
+
+config MBEDTLS_ECDSA_VERIFY_ALT
+	bool "Use Microchip PUKCC for MbedTLS ECDSA verification"
+	depends on (SOC_FAMILY_MICROCHIP_PIC32CX_SG || SOC_FAMILY_SAM || SOC_FAMILY_SAM0) && MBEDTLS_BUILTIN
+	select MBEDTLS_ECDSA_C
+	select MBEDTLS_ECP_C
+	help
+	  Replace MbedTLS ECDSA verify software implementation with PUKCC
+	  hardware acceleration. Supports P-256 (secp256r1) curve.
+
+config MBEDTLS_RSA_ALT
+	bool "Use Microchip PUKCC for MbedTLS RSA operations"
+	depends on (SOC_FAMILY_MICROCHIP_PIC32CX_SG || SOC_FAMILY_SAM || SOC_FAMILY_SAM0) && MBEDTLS_BUILTIN
+	select MBEDTLS_RSA_C
+	help
+	  Replace MbedTLS RSA software implementation with PUKCC hardware
+	  acceleration. Uses PUKCC ExpMod for modular exponentiation.
+	  Supports RSA key sizes up to 2048 bits.
+
 config MBEDTLS_SSL_DTLS_CONNECTION_ID
 	bool "DTLS Connection ID extension"
 	depends on MBEDTLS_DTLS

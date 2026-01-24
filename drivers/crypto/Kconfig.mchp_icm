@@ -1,0 +1,22 @@
+# Copyright (c) 2024 Microchip Technology Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config CRYPTO_MCHP_ICM
+	bool "Microchip PIC32CX/SAM E5x ICM crypto driver"
+	default y
+	depends on DT_HAS_MICROCHIP_ICM_G1_ENABLED
+	help
+	  Enable the ICM (Integrity Check Monitor) hardware crypto driver
+	  for Microchip PIC32CX SG and SAM E54/D51 devices.
+
+	  This driver supports SHA-256 and SHA-224 hash computation using
+	  the ICM hardware accelerator.
+
+config CRYPTO_MCHP_ICM_MAX_SESSION
+	int "Maximum number of concurrent ICM sessions"
+	default 4
+	depends on CRYPTO_MCHP_ICM
+	help
+	  Maximum number of concurrent hash sessions supported by the
+	  ICM driver. Each session requires memory for descriptors and
+	  hash output buffers.

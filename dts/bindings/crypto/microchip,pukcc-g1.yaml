@@ -1,0 +1,32 @@
+# Copyright (c) 2025 Microchip Technology Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Microchip PUKCC (Public Key Cryptographic Controller) Generation 1
+  hardware cryptographic accelerator for asymmetric crypto operations.
+
+  Found on PIC32CX SG, SAM D51, and SAM E54 devices.
+
+  The PUKCC peripheral provides:
+    - ECC (Elliptic Curve Cryptography) operations
+    - ECDSA signature generation and verification
+    - RSA encryption/decryption and signature operations
+    - Modular arithmetic acceleration
+    - Random number generation support
+
+  Example devicetree configuration:
+
+    pukcc: crypto@42003000 {
+        compatible = "microchip,pukcc-g1";
+        reg = <0x42003000 0x200>;
+        status = "okay";
+    };
+
+compatible: "microchip,pukcc-g1"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: PUKCC peripheral register base address and size

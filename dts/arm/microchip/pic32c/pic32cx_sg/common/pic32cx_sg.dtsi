@@ -391,6 +391,19 @@
 			status = "disabled";
 		};
 
+		icm: crypto@42002c00 {
+			compatible = "microchip,icm-g1";
+			reg = <0x42002c00 0x28>;
+			interrupts = <132 0>;
+			status = "disabled";
+		};
+
+		pukcc: crypto@42003000 {
+			compatible = "microchip,pukcc-g1";
+			reg = <0x42003000 0x200>;
+			status = "disabled";
+		};
+
 		sercom4: sercom@43000000 {
 			compatible = "microchip,sercom-g1";
 			reg = <0x43000000 0x29>;

@@ -44,6 +44,13 @@ zephyr_interface_library_named(mbedTLS)
         include
     )
 
+    # Add Microchip ALT driver include paths (needed for sha256_alt.h, rsa_alt.h etc)
+    if(CONFIG_MBEDTLS_SHA256_ALT OR CONFIG_MBEDTLS_ECDSA_SIGN_ALT OR CONFIG_MBEDTLS_ECDSA_VERIFY_ALT OR CONFIG_MBEDTLS_RSA_ALT)
+      target_include_directories(mbedTLS INTERFACE
+        ${ZEPHYR_BASE}/../modules/hal/microchip/crypto
+      )
+    endif()
+
     if (CONFIG_MBEDTLS_PSA_P256M_DRIVER_RAW)
       target_include_directories(mbedTLS INTERFACE
         ${ZEPHYR_CURRENT_MODULE_DIR}/3rdparty/p256-m/p256-m
@@ -163,6 +170,42 @@ zephyr_interface_library_named(mbedTLS)
         ${ZEPHYR_CURRENT_MODULE_DIR}/3rdparty/p256-m/p256-m/p256-m.c
       )
       zephyr_library_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/library)
+    endif()
+
+    # Microchip MbedTLS ALT implementations (hardware acceleration)
+    set(HAL_MICROCHIP_DIR ${ZEPHYR_BASE}/../modules/hal/microchip)
+    
+    # SHA-256 ALT implementation using ICM hardware
+    if(CONFIG_MBEDTLS_SHA256_ALT)
+      list(APPEND crypto_source
+        ${HAL_MICROCHIP_DIR}/crypto/sha256_alt.c
+      )
+      zephyr_library_include_directories(
+        ${HAL_MICROCHIP_DIR}/crypto
+        ${HAL_MICROCHIP_DIR}/include
+      )
+    endif()
+
+    # ECDSA ALT implementation using PUKCC hardware
+    if(CONFIG_MBEDTLS_ECDSA_SIGN_ALT OR CONFIG_MBEDTLS_ECDSA_VERIFY_ALT)
+      list(APPEND crypto_source
+        ${HAL_MICROCHIP_DIR}/crypto/ecdsa_alt.c
+      )
+      zephyr_library_include_directories(
+        ${HAL_MICROCHIP_DIR}/crypto
+        ${HAL_MICROCHIP_DIR}/include
+      )
+    endif()
+
+    # RSA ALT implementation using PUKCC hardware
+    if(CONFIG_MBEDTLS_RSA_ALT)
+      list(APPEND crypto_source
+        ${HAL_MICROCHIP_DIR}/crypto/rsa_alt.c
+      )
+      zephyr_library_include_directories(
+        ${HAL_MICROCHIP_DIR}/crypto
+        ${HAL_MICROCHIP_DIR}/include
+      )
     endif()
 
     list(APPEND crypto_source

@@ -213,6 +213,10 @@
 	status = "okay";
 };
 
+&trng {
+	status = "okay";
+};
+
 &sercom4 {
 	status = "okay";
 	compatible = "microchip,sercom-g1-uart";

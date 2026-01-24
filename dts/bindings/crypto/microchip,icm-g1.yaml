@@ -1,0 +1,35 @@
+# Copyright (c) 2024 Microchip Technology Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Microchip ICM (Integrity Check Monitor) Generation 1 hardware
+  cryptographic accelerator for SHA hash computation.
+
+  Found on PIC32CX SG, SAM D51, and SAM E54 devices.
+
+  The ICM peripheral provides:
+    - SHA-1, SHA-224, and SHA-256 hash computation
+    - Memory integrity monitoring (tamper detection)
+    - DMA-based data processing
+
+  Example devicetree configuration:
+
+    icm: crypto@42002c00 {
+        compatible = "microchip,icm-g1";
+        reg = <0x42002c00 0x28>;
+        interrupts = <132 0>;
+        status = "okay";
+    };
+
+compatible: "microchip,icm-g1"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: ICM peripheral register base address and size
+
+  interrupts:
+    required: true
+    description: ICM interrupt line
